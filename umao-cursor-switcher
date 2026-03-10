@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""UmaOS Cursor Theme Switcher — Qt6/QML GUI with kdialog & text fallbacks."""
+
+import os
+import sys
+import subprocess
+import shutil
+import re
+
+
+# ── Theme discovery ────────────────────────────────────────────────────────────
+
+ICON_DIR = "/usr/share/icons"
+
+
+def discover_themes() -> list[dict]:
+    """Find all pixloen-* cursor themes and return sorted list of dicts."""
+    themes = []
+    if not os.path.isdir(ICON_DIR):
+        return themes
+
+    for entry in sorted(os.listdir(ICON_DIR)):
+        if not entry.startswith("pixloen-"):
+            continue
+        cursors_dir = os.path.join(ICON_DIR, entry, "cursors")
+        if not os.path.isdir(cursors_dir):
+            continue
+
+        # Extract friendly name: pixloen-haru-urara-v1.7 → Haru Urara
+        name = entry.removeprefix("pixloen-")
+        name = re.sub(r"-v\d+(\.\d+)*$", "", name)
+        name = name.replace("-cursor-pack", "")
+        name = name.replace("-", " ").title()
+
+        themes.append({
+            "themeId": entry,
+            "displayName": name,
+        })
+
+    return themes
+
+
+def get_current_theme() -> str:
+    """Read the current cursor theme from KDE config."""
+    rc = os.path.expanduser("~/.config/kcminputrc")
+    if not os.path.isfile(rc):
+        return ""
+    try:
+        with open(rc) as f:
+            for line in f:
+                if line.startswith("cursorTheme="):
+                    return line.strip().split("=", 1)[1]
+    except OSError:
+        pass
+    return ""
+
+
+def apply_theme(theme_id: str) -> None:
+    """Apply cursor theme to KDE, GTK, and X11."""
+    # KDE via kwriteconfig
+    for cmd in ("kwriteconfig6", "kwriteconfig5"):
+        if shutil.which(cmd):
+            subprocess.run(
+                [cmd, "--file", "kcminputrc", "--group", "Mouse",
+                 "--key", "cursorTheme", theme_id],
+                capture_output=True,
+            )
+            subprocess.run(
+                [cmd, "--file", "kcminputrc", "--group", "Mouse",
+                 "--key", "cursorThemeName", theme_id],
+                capture_output=True,
+            )
+            break
+
+    # GTK 3.0 / 4.0
+    home = os.path.expanduser("~")
+    for gtk_ver in ("gtk-3.0", "gtk-4.0"):
+        cfg = os.path.join(home, ".config", gtk_ver, "settings.ini")
+        if os.path.isfile(cfg):
+            try:
+                with open(cfg) as f:
+                    content = f.read()
+                content = re.sub(
+                    r"^gtk-cursor-theme-name=.*$",
+                    f"gtk-cursor-theme-name={theme_id}",
+                    content,
+                    flags=re.MULTILINE,
+                )
+                with open(cfg, "w") as f:
+                    f.write(content)
+            except OSError:
+                pass
+
+    # X11 default cursor
+    default_dir = os.path.join(home, ".icons", "default")
+    os.makedirs(default_dir, exist_ok=True)
+    with open(os.path.join(default_dir, "index.theme"), "w") as f:
+        f.write(f"[Icon Theme]\nInherits={theme_id}\n")
+
+    # Reconfigure KWin
+    for qdbus_cmd in ("qdbus6", "qdbus-qt6", "qdbus"):
+        if shutil.which(qdbus_cmd):
+            subprocess.run(
+                [qdbus_cmd, "org.kde.KWin", "/KWin", "reconfigure"],
+                capture_output=True,
+            )
+            break
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def has_display() -> bool:
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# QML GUI mode (PyQt6)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_qml() -> None:
+    from PyQt6.QtCore import QObject, QUrl, pyqtSignal, pyqtSlot, pyqtProperty
+    from PyQt6.QtGui import QGuiApplication, QIcon
+    from PyQt6.QtQml import QQmlApplicationEngine
+
+    class CursorBackend(QObject):
+        themeApplied = pyqtSignal(str, arguments=["themeId"])
+
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self._themes = discover_themes()
+            self._current = get_current_theme()
+
+        @pyqtProperty("QVariantList", constant=True)
+        def themes(self):
+            return self._themes
+
+        @pyqtProperty(str, constant=True)
+        def currentTheme(self):
+            return self._current
+
+        @pyqtSlot(str)
+        def applyTheme(self, theme_id):
+            apply_theme(theme_id)
+            self._current = theme_id
+            self.themeApplied.emit(theme_id)
+
+    app = QGuiApplication(sys.argv)
+    app.setApplicationName("UmaOS Cursor Switcher")
+
+    icon_path = "/usr/share/umaos/cursor-switcher/icon.png"
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
+
+    engine = QQmlApplicationEngine()
+    backend = CursorBackend()
+    engine.rootContext().setContextProperty("backend", backend)
+
+    qml_dir = "/usr/share/umaos/cursor-switcher"
+    engine.addImportPath(qml_dir)
+    engine.load(QUrl.fromLocalFile(os.path.join(qml_dir, "main.qml")))
+
+    if not engine.rootObjects():
+        print("Error: Failed to load QML interface.", file=sys.stderr)
+        sys.exit(1)
+
+    sys.exit(app.exec())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# kdialog fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_kdialog() -> None:
+    TITLE = "UmaOS Cursor Switcher"
+    ICON = "/usr/share/umaos/cursor-switcher/icon.png"
+    themes = discover_themes()
+    current = get_current_theme()
+
+    if not themes:
+        subprocess.run(
+            ["kdialog", "--icon", ICON, "--title", TITLE,
+             "--sorry", "No pixloen cursor themes found."],
+            capture_output=True,
+        )
+        return
+
+    args = []
+    for t in themes:
+        state = "on" if t["themeId"] == current else "off"
+        args += [t["themeId"], t["displayName"], state]
+
+    result = subprocess.run(
+        ["kdialog", "--icon", ICON, "--title", TITLE,
+         "--radiolist", "Choose a cursor theme:"] + args,
+        capture_output=True, text=True,
+    )
+
+    if result.returncode != 0 or not result.stdout.strip():
+        return
+
+    selected = result.stdout.strip().replace('"', '')
+    apply_theme(selected)
+
+    # Find display name
+    name = selected
+    for t in themes:
+        if t["themeId"] == selected:
+            name = t["displayName"]
+            break
+
+    subprocess.run(
+        ["kdialog", "--icon", ICON, "--title", TITLE,
+         "--passivepopup", f"{name} cursor is now active!", "5"],
+        capture_output=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Text fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def run_text() -> None:
+    themes = discover_themes()
+    current = get_current_theme()
+
+    if not themes:
+        print("No pixloen cursor themes found.")
+        return
+
+    print()
+    print("  UmaOS Cursor Theme Switcher")
+    print("  " + "\u2501" * 30)
+    print()
+
+    for i, t in enumerate(themes):
+        marker = "\u25b8 " if t["themeId"] == current else "  "
+        print(f"  {marker}{i + 1:2d}) {t['displayName']}")
+
+    print()
+    try:
+        choice = input(f"  Choose cursor (1-{len(themes)}): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not choice.isdigit() or not (1 <= int(choice) <= len(themes)):
+        print("  Invalid choice.")
+        return
+
+    selected = themes[int(choice) - 1]
+    print(f"\n  Applying: {selected['displayName']} ({selected['themeId']})")
+    apply_theme(selected["themeId"])
+    print(f"  Done! {selected['displayName']} cursor is now active.")
+    print("  (Log out and back in if it doesn't update immediately.)")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main() -> None:
+    if "--text" in sys.argv:
+        return run_text()
+
+    if not has_display():
+        return run_text()
+
+    try:
+        import PyQt6.QtCore  # noqa: F401
+        return run_qml()
+    except ImportError:
+        pass
+
+    if shutil.which("kdialog"):
+        return run_kdialog()
+
+    return run_text()
+
+
+if __name__ == "__main__":
+    main()

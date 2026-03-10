@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Cursor Switcher
+Comment=Choose an Uma Musume character cursor theme
+Exec=/usr/local/bin/umao-cursor-switcher
+Icon=/usr/share/umaos/cursor-switcher/icon.png
+Terminal=false
+Categories=Settings;
