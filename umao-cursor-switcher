@@ -3,14 +3,121 @@
 
 import os
 import sys
+import struct
 import subprocess
 import shutil
 import re
+import tempfile
 
 
 # ── Theme discovery ────────────────────────────────────────────────────────────
 
 ICON_DIR = "/usr/share/icons"
+PREVIEW_CACHE_DIR = os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+    "umao-cursor-switcher", "previews",
+)
+
+
+# ── X11 cursor preview extraction ─────────────────────────────────────────────
+
+def extract_cursor_png(cursor_path: str, size: int = 32) -> bytes | None:
+    """Extract a single frame from an X11 cursor file as raw RGBA pixels.
+
+    Returns (width, height, rgba_bytes) or None on failure.
+    """
+    try:
+        with open(cursor_path, "rb") as f:
+            magic = f.read(4)
+            if magic != b"Xcur":
+                return None
+            header_size, version, ntoc = struct.unpack("<III", f.read(12))
+
+            # Read TOC entries — type 0xfffd0002 = image
+            images = []
+            for _ in range(ntoc):
+                etype, esubtype, epos = struct.unpack("<III", f.read(12))
+                if etype == 0xFFFD0002:
+                    images.append((esubtype, epos))  # (nominal_size, file_pos)
+
+            if not images:
+                return None
+
+            # Find best match for requested size (prefer exact, then closest larger)
+            images.sort(key=lambda x: (abs(x[0] - size), x[0]))
+            _, pos = images[0]
+
+            # Read image chunk
+            f.seek(pos)
+            chunk_header_size, chunk_type, chunk_subtype, chunk_version = struct.unpack("<IIII", f.read(16))
+            width, height, xhot, yhot, delay = struct.unpack("<IIIII", f.read(20))
+            pixels = f.read(width * height * 4)  # ARGB
+
+            if len(pixels) != width * height * 4:
+                return None
+
+            return (width, height, pixels)
+    except (OSError, struct.error):
+        return None
+
+
+def write_png(path: str, width: int, height: int, argb_pixels: bytes) -> bool:
+    """Write ARGB pixel data as a PNG file (pure Python, no dependencies)."""
+    import zlib
+
+    # Convert ARGB to RGBA
+    rgba = bytearray(len(argb_pixels))
+    for i in range(0, len(argb_pixels), 4):
+        b, g, r, a = argb_pixels[i], argb_pixels[i + 1], argb_pixels[i + 2], argb_pixels[i + 3]
+        rgba[i] = r
+        rgba[i + 1] = g
+        rgba[i + 2] = b
+        rgba[i + 3] = a
+
+    # Build PNG
+    def chunk(ctype: bytes, data: bytes) -> bytes:
+        c = ctype + data
+        crc = zlib.crc32(c) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + c + struct.pack(">I", crc)
+
+    raw_data = bytearray()
+    stride = width * 4
+    for y in range(height):
+        raw_data.append(0)  # filter byte: None
+        raw_data.extend(rgba[y * stride:(y + 1) * stride])
+
+    try:
+        with open(path, "wb") as f:
+            f.write(b"\x89PNG\r\n\x1a\n")
+            f.write(chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)))
+            f.write(chunk(b"IDAT", zlib.compress(bytes(raw_data))))
+            f.write(chunk(b"IEND", b""))
+        return True
+    except OSError:
+        return False
+
+
+def get_preview_path(theme_id: str) -> str:
+    """Get or generate a cursor preview PNG for a theme. Returns path or empty."""
+    os.makedirs(PREVIEW_CACHE_DIR, exist_ok=True)
+    png_path = os.path.join(PREVIEW_CACHE_DIR, f"{theme_id}.png")
+
+    if os.path.isfile(png_path):
+        return png_path
+
+    # Try common cursor names for preview
+    cursors_dir = os.path.join(ICON_DIR, theme_id, "cursors")
+    for name in ("left_ptr", "default", "arrow", "top_left_arrow"):
+        cursor_file = os.path.join(cursors_dir, name)
+        if not os.path.isfile(cursor_file):
+            continue
+        result = extract_cursor_png(cursor_file, size=32)
+        if result:
+            width, height, pixels = result
+            if write_png(png_path, width, height, pixels):
+                return png_path
+
+    return ""
 
 
 def discover_themes() -> list[dict]:
@@ -35,6 +142,7 @@ def discover_themes() -> list[dict]:
         themes.append({
             "themeId": entry,
             "displayName": name,
+            "preview": get_preview_path(entry),
         })
 
     return themes

@@ -91,30 +91,24 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 14
                 anchors.rightMargin: 14
-                spacing: 14
+                spacing: 12
 
-                // Radio button
-                Item {
-                    width: 22
-                    height: 22
+                // Cursor preview
+                Rectangle {
+                    width: 40
+                    height: 40
+                    radius: 8
+                    color: rowDelegate.checked ? Theme.nearBlack : Theme.darkEmerald
                     anchors.verticalCenter: parent.verticalCenter
 
-                    Rectangle {
-                        anchors.fill: parent
-                        radius: 11
-                        color: rowDelegate.checked ? Theme.primaryGreen : "transparent"
-                        border.width: rowDelegate.checked ? 0 : 1.5
-                        border.color: Theme.borderGreen
-
-                        // Inner dot
-                        Rectangle {
-                            anchors.centerIn: parent
-                            width: 8
-                            height: 8
-                            radius: 4
-                            color: Theme.nearBlack
-                            visible: rowDelegate.checked
-                        }
+                    Image {
+                        anchors.centerIn: parent
+                        width: 28
+                        height: 28
+                        source: modelData.preview ? "file://" + modelData.preview : ""
+                        fillMode: Image.PreserveAspectFit
+                        visible: modelData.preview !== ""
+                        smooth: true
                     }
                 }
 
@@ -122,7 +116,7 @@ Item {
                 Column {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: 3
-                    width: parent.width - 50
+                    width: parent.width - 40 - 22 - 12 * 2
 
                     Row {
                         spacing: 8
@@ -161,6 +155,30 @@ Item {
                         color: rowDelegate.checked ? Theme.textDim : Theme.faintGreen
                         elide: Text.ElideRight
                         width: parent.width
+                    }
+                }
+
+                // Radio button (right side)
+                Item {
+                    width: 22
+                    height: 22
+                    anchors.verticalCenter: parent.verticalCenter
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: 11
+                        color: rowDelegate.checked ? Theme.primaryGreen : "transparent"
+                        border.width: rowDelegate.checked ? 0 : 1.5
+                        border.color: Theme.borderGreen
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: Theme.nearBlack
+                            visible: rowDelegate.checked
+                        }
                     }
                 }
             }
