@@ -164,8 +164,24 @@ def get_current_theme() -> str:
 
 
 def apply_theme(theme_id: str) -> None:
-    """Apply cursor theme to KDE, GTK, and X11."""
-    # KDE via kwriteconfig
+    """Apply cursor theme to KDE, GTK, and X11.
+
+    plasma-apply-cursortheme is the supported Plasma 5.23+/6 entry point: it
+    updates the config *and* notifies the running session, so the cursor
+    actually changes without a re-login. The kwriteconfig/KWin-reconfigure
+    path below only rewrites config files, which is why the old
+    implementation appeared to do nothing until the user logged out.
+    """
+    applied_live = False
+    if shutil.which("plasma-apply-cursortheme"):
+        r = subprocess.run(
+            ["plasma-apply-cursortheme", theme_id],
+            capture_output=True, text=True,
+        )
+        applied_live = r.returncode == 0
+
+    # KDE via kwriteconfig — still written as a fallback (and to cover the
+    # case where plasma-apply-cursortheme is unavailable or failed).
     for cmd in ("kwriteconfig6", "kwriteconfig5"):
         if shutil.which(cmd):
             subprocess.run(
@@ -173,31 +189,48 @@ def apply_theme(theme_id: str) -> None:
                  "--key", "cursorTheme", theme_id],
                 capture_output=True,
             )
-            subprocess.run(
-                [cmd, "--file", "kcminputrc", "--group", "Mouse",
-                 "--key", "cursorThemeName", theme_id],
-                capture_output=True,
-            )
             break
 
-    # GTK 3.0 / 4.0
+    # GTK 3.0 / 4.0.
+    # The old code only re.sub'd an existing gtk-cursor-theme-name line: with
+    # no match re.sub is a silent no-op, and a missing settings.ini was skipped
+    # entirely — so GTK apps were usually never updated at all. Create the file
+    # and insert the key when absent.
     home = os.path.expanduser("~")
     for gtk_ver in ("gtk-3.0", "gtk-4.0"):
-        cfg = os.path.join(home, ".config", gtk_ver, "settings.ini")
-        if os.path.isfile(cfg):
-            try:
+        cfg_dir = os.path.join(home, ".config", gtk_ver)
+        cfg = os.path.join(cfg_dir, "settings.ini")
+        try:
+            content = ""
+            if os.path.isfile(cfg):
                 with open(cfg) as f:
                     content = f.read()
+
+            if re.search(r"^gtk-cursor-theme-name=", content, flags=re.MULTILINE):
                 content = re.sub(
                     r"^gtk-cursor-theme-name=.*$",
                     f"gtk-cursor-theme-name={theme_id}",
                     content,
                     flags=re.MULTILINE,
                 )
-                with open(cfg, "w") as f:
-                    f.write(content)
-            except OSError:
-                pass
+            elif re.search(r"^\[Settings\]", content, flags=re.MULTILINE):
+                content = re.sub(
+                    r"^\[Settings\]$",
+                    f"[Settings]\ngtk-cursor-theme-name={theme_id}",
+                    content,
+                    count=1,
+                    flags=re.MULTILINE,
+                )
+            else:
+                if content and not content.endswith("\n"):
+                    content += "\n"
+                content += f"[Settings]\ngtk-cursor-theme-name={theme_id}\n"
+
+            os.makedirs(cfg_dir, exist_ok=True)
+            with open(cfg, "w") as f:
+                f.write(content)
+        except OSError:
+            pass
 
     # X11 default cursor
     default_dir = os.path.join(home, ".icons", "default")
@@ -280,7 +313,9 @@ def run_qml() -> None:
 
 def run_kdialog() -> None:
     TITLE = "UmaOS Cursor Switcher"
-    ICON = "/usr/share/umaos/cursor-switcher/icon.png"
+    # kdialog --icon expects a themed icon NAME, not a path; the path used
+    # before did not exist in the repo or the package anyway.
+    ICON = "input-mouse"
     themes = discover_themes()
     current = get_current_theme()
 
