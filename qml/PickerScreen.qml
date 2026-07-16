@@ -7,6 +7,20 @@ Item {
 
     property string selectedTheme: backend.currentTheme
     property int selectionVersion: 0
+    property string applyError: ""
+
+    // Advance to the Done screen only when the backend reports success, and
+    // surface failures instead of silently pretending the apply worked.
+    Connections {
+        target: backend
+        function onThemeApplied(themeId) {
+            root.applyError = ""
+            stackView.push(doneScreen, { "themeName": root.selectedDisplayName() })
+        }
+        function onThemeApplyFailed(error) {
+            root.applyError = error
+        }
+    }
 
     function isSelected(themeId) {
         void selectionVersion
@@ -223,7 +237,26 @@ Item {
             }
         }
 
+        // Apply failures were previously invisible; show them next to the
+        // buttons rather than silently doing nothing.
+        Text {
+            anchors.left: parent.left
+            anchors.leftMargin: 36
+            anchors.right: footerButtons.left
+            anchors.rightMargin: 16
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.applyError !== ""
+            text: root.applyError
+            font.family: Theme.sansFont
+            font.pixelSize: 12
+            color: "#ff7c8a"
+            wrapMode: Text.WordWrap
+            elide: Text.ElideRight
+            maximumLineCount: 2
+        }
+
         Row {
+            id: footerButtons
             anchors.right: parent.right
             anchors.rightMargin: 36
             anchors.verticalCenter: parent.verticalCenter
@@ -278,10 +311,11 @@ Item {
                     cursorShape: parent.hasNewSelection ? Qt.PointingHandCursor : Qt.ArrowCursor
                     onClicked: {
                         if (parent.hasNewSelection) {
+                            // Only advance once the backend confirms success:
+                            // this used to push the "Cursor Applied!" screen
+                            // unconditionally, so a failed or partial apply
+                            // still looked like it had worked.
                             backend.applyTheme(root.selectedTheme)
-                            stackView.push(doneScreen, {
-                                "themeName": root.selectedDisplayName()
-                            })
                         }
                     }
                 }

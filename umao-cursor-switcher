@@ -227,8 +227,12 @@ def get_current_theme() -> str:
     return ""
 
 
-def apply_theme(theme_id: str) -> None:
+def apply_theme(theme_id: str) -> tuple[bool, str]:
     """Apply cursor theme to KDE, GTK, and X11.
+
+    Returns (ok, message). Callers must not assume success: this used to
+    return None and swallow every failure, so the GUI showed "Cursor Applied!"
+    even when the apply had raised or partially failed.
 
     plasma-apply-cursortheme is the supported Plasma 5.23+/6 entry point: it
     updates the config *and* notifies the running session, so the cursor
@@ -296,20 +300,31 @@ def apply_theme(theme_id: str) -> None:
         except OSError:
             pass
 
-    # X11 default cursor
+    # X11 default cursor. This write was unguarded: a failure raised mid-apply
+    # (leaving a half-applied state) while the GUI still showed success.
     default_dir = os.path.join(home, ".icons", "default")
-    os.makedirs(default_dir, exist_ok=True)
-    with open(os.path.join(default_dir, "index.theme"), "w") as f:
-        f.write(f"[Icon Theme]\nInherits={theme_id}\n")
+    try:
+        os.makedirs(default_dir, exist_ok=True)
+        with open(os.path.join(default_dir, "index.theme"), "w") as f:
+            f.write(f"[Icon Theme]\nInherits={theme_id}\n")
+    except OSError as e:
+        return False, f"Could not write {default_dir}/index.theme: {e}"
 
-    # Reconfigure KWin
+    # Reconfigure KWin so the running session picks the change up. Failures
+    # here are not fatal (plasma-apply-cursortheme above already notified the
+    # session when available), but they were previously swallowed entirely.
     for qdbus_cmd in ("qdbus6", "qdbus-qt6", "qdbus"):
         if shutil.which(qdbus_cmd):
-            subprocess.run(
+            r = subprocess.run(
                 [qdbus_cmd, "org.kde.KWin", "/KWin", "reconfigure"],
                 capture_output=True,
             )
+            if r.returncode != 0 and not applied_live:
+                # Only worth surfacing if nothing else refreshed the session.
+                return True, "Applied, but the running session may need a re-login to pick it up."
             break
+
+    return True, ""
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -329,6 +344,10 @@ def run_qml() -> None:
 
     class CursorBackend(QObject):
         themeApplied = pyqtSignal(str, arguments=["themeId"])
+        # applyTheme can fail (unwritable ~/.icons, missing kwriteconfig);
+        # without a failure signal the UI showed "Cursor Applied!" regardless.
+        themeApplyFailed = pyqtSignal(str, arguments=["error"])
+        currentThemeChanged = pyqtSignal()
 
         def __init__(self, parent=None):
             super().__init__(parent)
@@ -339,14 +358,21 @@ def run_qml() -> None:
         def themes(self):
             return self._themes
 
-        @pyqtProperty(str, constant=True)
+        # NOT constant: applyTheme mutates _current, so a constant property
+        # left every QML binding that reads it (the Active badge,
+        # hasNewSelection) silently stale after an apply.
+        @pyqtProperty(str, notify=currentThemeChanged)
         def currentTheme(self):
             return self._current
 
         @pyqtSlot(str)
         def applyTheme(self, theme_id):
-            apply_theme(theme_id)
+            ok, err = apply_theme(theme_id)
+            if not ok:
+                self.themeApplyFailed.emit(err)
+                return
             self._current = theme_id
+            self.currentThemeChanged.emit()
             self.themeApplied.emit(theme_id)
 
     app = QGuiApplication(sys.argv)
@@ -406,7 +432,11 @@ def run_kdialog() -> None:
         return
 
     selected = result.stdout.strip().replace('"', '')
-    apply_theme(selected)
+    ok, err = apply_theme(selected)
+    if not ok:
+        subprocess.run(["kdialog", "--icon", ICON, "--title", TITLE, "--error", err],
+                       capture_output=True)
+        return
 
     # Find display name
     name = selected
@@ -456,9 +486,14 @@ def run_text() -> None:
 
     selected = themes[int(choice) - 1]
     print(f"\n  Applying: {selected['displayName']} ({selected['themeId']})")
-    apply_theme(selected["themeId"])
+    ok, err = apply_theme(selected["themeId"])
+    if not ok:
+        print(f"  ERROR: {err}")
+        print()
+        return
     print(f"  Done! {selected['displayName']} cursor is now active.")
-    print("  (Log out and back in if it doesn't update immediately.)")
+    if err:
+        print(f"  Note: {err}")
     print()
 
 
