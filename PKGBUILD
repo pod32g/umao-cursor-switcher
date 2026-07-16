@@ -51,6 +51,19 @@ package() {
         [ -n "$theme_dir" ] || { rm -rf "$extract_root"; continue; }
 
         cp -a "$theme_root" "$dest_icons/$theme_dir"
+
+        # Most archives are tarbombs, so $theme_root is the mktemp -d dir
+        # itself (mode 0700) and `cp -a` preserves that — the installed theme
+        # would be unreadable by every non-root user, silently breaking cursor
+        # discovery. The packs also ship data files with stray exec bits.
+        # Normalize: dirs 755, files 644.
+        find "$dest_icons/$theme_dir" -type d -exec chmod 755 {} +
+        find "$dest_icons/$theme_dir" -type f -exec chmod 644 {} +
+
+        # Packs ship their own README/Preview alongside the theme; they have no
+        # business inside /usr/share/icons/<theme>/.
+        rm -f "$dest_icons/$theme_dir/README.txt" "$dest_icons/$theme_dir/Preview.png"
+
         rm -rf "$extract_root"
     done
 }
