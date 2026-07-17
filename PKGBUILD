@@ -1,6 +1,11 @@
 # Maintainer: pod32g
+#
+# NOTE: this file is the canonical copy. umaos/custom-pkgs/umao-cursor-switcher/
+# must be kept byte-identical to it — the ISO build (scripts/build-iso.sh) uses
+# that copy, so any fix made only here silently never ships. CI enforces this;
+# see .github/workflows/ci.yml in the umaos repo.
 pkgname=umao-cursor-switcher
-pkgver=1.0.1
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="UmaOS cursor theme switcher with Uma Musume character cursors"
 arch=('any')
@@ -14,7 +19,11 @@ depends=('python' 'python-pyqt6' 'qt6-declarative' 'kconfig' 'qt6-tools')
 optdepends=('kdialog: fallback GUI when PyQt6 is unavailable'
             'plasma-workspace: apply the cursor theme to the running session without re-login')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/pod32g/$pkgname/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')
+# Pinned, not SKIP: this is a fixed release tag fetched over the network, so an
+# unverified source lets a repo/CDN compromise or a moved tag land arbitrary
+# code in the ISO. Regenerate whenever pkgver changes:
+#   makepkg -g   (or: curl -sSL <url> | sha256sum)
+sha256sums=('47c96f3738239a5437fb607dfeb2fc38429f83e284dcf58657a9043d25667211')
 
 package() {
     cd "$pkgname-$pkgver"
